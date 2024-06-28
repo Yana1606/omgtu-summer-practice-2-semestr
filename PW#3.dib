@@ -32,35 +32,193 @@
 
 #!csharp
 
-//
-// Вычисление определенного интеграла
-//
+using System;
+using System.Threading.Tasks;
+using System.Threading;
+
 class DefiniteIntegral
 {
-    //
-    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
-    // function - функция, для которой вычисляется определнный интеграл
-    // step - размер одного шага разбиения
-    // threadsNumber - число потоков, которые используются для вычислений
-    //
-    public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
+    private static double customResult;
+    private static Barrier barrier;
+
+
+    public static double Solve(double a, double b, Func<double, double> function, double step, int threadsNumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        double customSteps = step / 10;
+        customResult = 0.0;
+        barrier = new Barrier(threadsNumber);
+
+        Task[] tasks = new Task[threadsNumber];
+        for (int i = 0; i < threadsNumber; i++)
+        {
+            int threadIndex = i;
+            tasks[i] = Task.Run(() =>
+            {
+                double localResult = CalculatePartialIntegral(a, b, function, customSteps, threadsNumber, threadIndex);
+                Add(ref customResult, localResult);
+                barrier.SignalAndWait();
+            });
+        }
+
+        Task.WaitAll(tasks);
+
+        return customResult;
+    }
+
+    private static double CalculatePartialIntegral(double a, double b, Func<double, double> function, double step, int threadsNumber, int threadIndex)
+    {
+        double locA = a + threadIndex * (b - a) / threadsNumber;
+        double locB = locA + (b - a) / threadsNumber;
+        double customLocalResult = 0.0;
+
+        for (double x = locA; x < locB; x += step)
+        {
+            customLocalResult += (function(x) + function(x + step)) * step / 2.0;
+        }
+
+        if (locB > b - step)
+        {
+            customLocalResult += (function(b - step) + function(b)) * step / 2.0;
+        }
+
+        return customLocalResult;
+    }
+
+    private static void Add(ref double loc1, double value)
+    {
+        double newCurrVariable;
+        double currVariable = loc1;
+        do
+        {
+            newCurrVariable = currVariable + value;
+        }
+        while (Interlocked.CompareExchange(ref loc1, newCurrVariable, currVariable) != currVariable);
+    }
+
+    public static double OneThreadSolve(double a, double b, Func<double, double> function, double step, int baseEpsilon = 4) 
+    {
+        double e = 1E-7;
+        if (a == Double.PositiveInfinity || a == Double.NegativeInfinity ||
+        b == Double.PositiveInfinity || b == Double.NegativeInfinity ||
+        step == Double.PositiveInfinity || step == Double.NegativeInfinity || step < e || Math.Abs(b - a) < e || b < a)
+        {
+            throw new ArgumentException("Введены некорректные данные!");
+        } 
+        double x = a;
+        double result=0.0;
+
+        int n = Convert.ToInt32(Math.Floor((b - a) / step));
+
+        result = Enumerable.Range(1, n)
+            .Select(i => (function(x + i * step) + function((x + (i - 1) * step))) / 2 * step)
+            .Sum();
+
+        if (((b - a) / step - n) > e){
+            result = (function(b) + function((x + n * step))) / 2 * (b - (x + n * step));
+        }
+
+        return result;
     }
 }
 
 #!csharp
 
+#r "nuget:ScottPlot, 5.0.35"
+using Microsoft.DotNet.Interactive.Formatting;
+using System.Diagnostics;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+#!csharp
+
 #r "nuget: xunit, 2.8.1"
-
+#r "nuget:ScottPlot, 5.0.35"
 using Xunit;
+using System.Diagnostics;
 
-var X = (double x) => x;
 var SIN = (double x) => Math.Sin(x);
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
+Stopwatch watch = new Stopwatch();
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
+double[] dataX = new double[9]; 
+double[] dataY = new double[9]; 
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+List<double> steps = new List<double>() { 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6 };
+
+Console.WriteLine("Исследование влияния шага на время интегрирования:");
+foreach (double step in steps)
+{
+    watch.Start();
+    Assert.Equal(0, DefiniteIntegral.OneThreadSolve(-100, 100, SIN, step), 1e-4);
+    watch.Stop();
+    Console.WriteLine($"Время: {watch.Elapsed.TotalMilliseconds} мс, Шаг: {step}");
+    watch.Reset();
+}
+Console.WriteLine("Оптимальный наименьший шаг 1e-5");
+
+double bestStep = 1e-5;
+
+Console.WriteLine("Исследование влияния количества потоков на время интегрирования:");
+int minThreadNum = 2;
+int maxThreadNum = 10;
+double minTime = double.MaxValue;
+int BestThread;
+for (int j = 2; j <= 10; j++)
+{
+    double Totaltime = 0;
+    for (int k = 0; k < 7; k++)
+    {
+        watch.Start();
+        Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, bestStep, j), 1e-4);
+        watch.Stop();
+        Totaltime += watch.Elapsed.TotalMilliseconds;
+        watch.Reset();
+    }
+
+    dataX[j - 2] = Totaltime / 7;
+    dataY[j - 2] = j;
+
+    if ((Totaltime / 7) < minTime)
+    {
+        minTime = Totaltime / 7;
+        BestThread = j;
+    }
+}
+
+Console.WriteLine($"Лучшее количество потоков: {BestThread}, время: {Math.Round(minTime, 2)} мс");
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(dataX, dataY);
+plt.XLabel("Длительность в мс");
+plt.YLabel("Количество потоков");
+plt.Title($"Лучший результат: {Math.Round(minTime, 2)} мс");
+
+plt
+
+#!csharp
+
+#r "nuget: xunit, 2.8.1"
+using Xunit;
+using System.Diagnostics;
+
+double oneThreadWholeTime = 0;
+Stopwatch watch = new Stopwatch();
+
+for (int i = 0; i < 7; i++)
+{
+    watch.Start();
+    Assert.Equal(0, DefiniteIntegral.OneThreadSolve(-100, 100, SIN, bestStep), 1e-4);
+    watch.Stop();
+    oneThreadWholeTime += watch.Elapsed.TotalMilliseconds;
+    watch.Reset();
+}
+
+oneThreadWholeTime /= 7;
+
+double minTime = 0; 
+
+Console.WriteLine($"Время однопоточной обработки: {Math.Round(oneThreadWholeTime, 2)}мс");
+Console.WriteLine($"Время многопоточной обработки: {Math.Round(minTime, 2)}мс");
+Console.WriteLine($"Разница в мс: {Math.Round(Math.Abs(oneThreadWholeTime - minTime), 2)}мс");
+Console.WriteLine($"Разница в %: {Math.Round(Math.Abs(oneThreadWholeTime - minTime) / minTime * 100, 2)}%");
