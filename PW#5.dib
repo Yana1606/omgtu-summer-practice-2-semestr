@@ -60,7 +60,31 @@ using System.Collections.Concurrent;
 var queue1 = new BlockingCollection<Message>(2); //очередь первого потока
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
-// Здесь писать решение
+private void PingPong(BlockingCollection<Message> inputQueue, BlockingCollection<Message> outputQueue) 
+    { 
+        for (int i = 0; i < 100; i ++)
+    {
+        var message = outputQueue.Take(); 
+        message.Handle();
+        inputQueue.Add(new Message());
+    }
+    } 
+
+#!csharp
+
+Task task1 = Task.Run(() => PingPong(queue1, queue2));
+Task task2 = Task.Run(() => PingPong(queue2, queue1));
+
+#!csharp
+
+queue1.Add(new Message()); 
+ 
+Task.WaitAll(task1, task2); 
+
+#!csharp
+
+while (queue1.Count > 0) queue1.Take();
+while (queue2.Count > 0) queue2.Take();
 
 #!csharp
 
