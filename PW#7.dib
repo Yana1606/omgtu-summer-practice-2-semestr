@@ -17,13 +17,6 @@
 
 #!csharp
 
-public interface ICommand
-{
-    void Execute();
-}
-
-#!csharp
-
 using System;
 using System.Collections.Concurrent;
 using System.Threading;
@@ -38,6 +31,7 @@ public class ServerThread
     private readonly ConcurrentQueue<ICommand> commandQueue = new ConcurrentQueue<ICommand>();
     private Thread runThread;
     private volatile bool isRunning;
+    private bool isStopping = false;
 
     public Thread RunThread => runThread;
 
@@ -48,7 +42,7 @@ public class ServerThread
         runThread.Start();
     }
 
-    //метод для добавления команды в очередь
+    // Метод для добавления команды в очередь
     public void AddCommand(ICommand command)
     {
         if (isRunning)
@@ -57,10 +51,41 @@ public class ServerThread
         }
     }
 
-    //основной метод, выполняющий команды из очереди
+    // Основной метод, выполняющий команды из очереди
     private void Run()
     {
-        while (isRunning || !commandQueue.IsEmpty)
+        try
+        {
+            while (isRunning || !commandQueue.IsEmpty)
+            {
+                if (commandQueue.TryDequeue(out ICommand command))
+                {
+                    try
+                    {
+                        command.Execute();
+                    }
+                    catch (Exception ex)
+                    {
+                        // Более подробная обработка исключений
+                        Console.WriteLine($"Исключение, обнаруженное во время выполнение программы: {ex.Message}");
+                    }
+                }
+            }
+        }
+        finally
+        {
+            
+        }
+    }
+
+    // Метод для остановки сервера с обработкой оставшихся команд
+    private void Stop(bool hardStop)
+    {
+        isStopping = true;
+        isRunning = false;
+
+        // Обработка оставшихся команд
+        while (!commandQueue.IsEmpty)
         {
             if (commandQueue.TryDequeue(out ICommand command))
             {
@@ -70,95 +95,165 @@ public class ServerThread
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Exception caught: {ex.Message}");
+                    // Обработка исключений
+                    Console.WriteLine($"Исключение, обнаруженное во время выполнение программы: {ex.Message}");
+
                 }
             }
         }
-    }
 
-    public void HardStop()
-    {
-        isRunning = false;
-        foreach (var remainingCommand in commandQueue)
-        {
-            try
-            {
-                remainingCommand.Execute();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Exception caught: {ex.Message}");
-            }
-        }
         commandQueue.Clear();
-        runThread.Interrupt();
-    }
 
-    public void SoftStop()
-    {
-        isRunning = false;
-        foreach (var remainingCommand in commandQueue)
+        if (hardStop)
         {
-            try
-            {
-                remainingCommand.Execute();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Exception caught: {ex.Message}");
-            }
+            // Прерывание потока
+            runThread.Interrupt();
         }
-        commandQueue.Clear();
-    }
-
-    public void WaitForCompletion()
-    {
-        runThread.Join();
     }
 }
 
-public class HardStopCommand : ICommand
-{
-    private readonly ServerThread serverThread;
-
-    public HardStopCommand(ServerThread serverThread)
-    {
-        this.serverThread = serverThread;
-    }
-
-    public void Execute()
-    {
-        if (Thread.CurrentThread != serverThread.RunThread)
-        {
-            throw new InvalidOperationException("Current thread does not match ServerThread thread");
-        }
-        serverThread.HardStop();
-    }
-}
-
-
-public class SoftStopCommand : ICommand
-{
-    private readonly ServerThread serverThread;
-
-    public SoftStopCommand(ServerThread serverThread)
-    {
-        this.serverThread = serverThread;
-    }
-
-    public void Execute()
-    {
-        if (Thread.CurrentThread != serverThread.RunThread)
-        {
-            throw new InvalidOperationException("Current thread does not match ServerThread thread");
-        }
-        serverThread.SoftStop();
-    }
-}
 #!csharp
 
-UnitTest.HardTest();
-UnitTest.SoftTest();
+public abstract class Command
+{
+    public abstract void Execute();
+}
+
+public class TestCommand : Command
+{
+    private string _name;
+    private bool _throwException;
+
+    public TestCommand(string name, bool throwException = false)
+    {
+        _name = name;
+        _throwException = throwException;
+    }
+
+    public override void Execute()
+    {
+        Console.WriteLine($"Выполнение команды: {_name}");
+        if (_throwException)
+        {
+            throw new Exception("Ошибка выполнения команды");
+        }
+    }
+}
+
+// Команда "Мягкая остановка"
+public class SoftStop : Command
+{
+    private ServerThread _serverThread;
+
+    public SoftStop(ServerThread serverThread)
+    {
+        _serverThread = serverThread;
+    }
+
+    public override void Execute()
+    {
+        _serverThread.Stop();
+    }
+}
+
+// Команда "Жёсткая остановка"
+public class HardStop : Command
+{
+    private ServerThread _serverThread;
+
+    public HardStop(ServerThread serverThread)
+    {
+        _serverThread = serverThread;
+    }
+
+    public override void Execute()
+    {
+        _serverThread.HardStop();
+    }
+}
+
+// Серверный поток
+public class ServerThread
+{
+    private List<Command> _commands = new List<Command>();
+
+    // Добавление команды в список
+    public void AddCommand(Command command)
+    {
+        _commands.Add(command);
+    }
+
+    // Запуск серверного потока
+    public void Start()
+    {
+        foreach (var command in _commands)
+        {
+            try
+            {
+                command.Execute();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Произошло исключение: {ex.Message}");
+            }
+        }
+    }
+
+    // Мягкая остановка
+    public void Stop()
+    {
+        Console.WriteLine("Остановка сервера (мягкая)");
+    }
+
+    // Жёсткая остановка
+    public void HardStop()
+    {
+        Console.WriteLine("Остановка сервера (жёсткая)");
+    }
+}
+
+// Создание списка тестов
+var tests = new List<(string name, Func<ServerThread> setup)>
+{
+    ("Обычная работа сервера", () =>
+    {
+        var serverThread = new ServerThread();
+        serverThread.AddCommand(new TestCommand("Команда 1"));
+        serverThread.AddCommand(new TestCommand("Команда 2"));
+        serverThread.AddCommand(new TestCommand("Команда 3"));
+        serverThread.AddCommand(new SoftStop(serverThread));
+        return serverThread;
+    }),
+    ("Жёсткая остановка сервера", () =>
+    {
+        var serverThread = new ServerThread();
+        serverThread.AddCommand(new TestCommand("Команда 1"));
+        serverThread.AddCommand(new TestCommand("Команда 2"));
+        serverThread.AddCommand(new HardStop(serverThread));
+        return serverThread;
+    }),
+    ("Исключение при выполнении команды", () =>
+    {
+        var serverThread = new ServerThread();
+        serverThread.AddCommand(new TestCommand("Команда 1"));
+        serverThread.AddCommand(new TestCommand("Команда 2"));
+        serverThread.AddCommand(new TestCommand("Команда 3 с исключением", true)); // Исключение здесь
+        serverThread.AddCommand(new SoftStop(serverThread));
+        return serverThread;
+    }),
+};
+
+// Запуск тестов
+foreach (var (name, setup) in tests)
+{
+    Console.WriteLine($"Тест: {name}");
+    var serverThread = setup();
+    serverThread.Start();
+    Console.WriteLine("Тест завершён.");
+    Console.WriteLine();
+}
+
+Console.Read();
 
 #!markdown
 
