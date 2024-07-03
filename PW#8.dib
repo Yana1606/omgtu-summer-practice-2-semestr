@@ -35,12 +35,110 @@
 
 #!csharp
 
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
+
 public interface IScheduler
 {
-    bool HasCommand()
+    bool HasCommand();
     ICommand Select();
     void Add(ICommand cmd);
 }
+
+public interface ICommand
+{
+    void Execute();
+    bool IsCompleted { get; }
+}
+
+public class GameCommand : ICommand
+{
+    private int _stepsRemaining;
+
+    public GameCommand(int steps)
+    {
+        _stepsRemaining = steps;
+    }
+
+    public void Execute()
+    {
+        if (_stepsRemaining > 0)
+        {
+            // Имитируем выполнение игровой логики
+            Console.WriteLine($"Выполнение игрового шага {_stepsRemaining}");
+            _stepsRemaining--;
+        }
+    }
+
+    public bool IsCompleted => _stepsRemaining == 0;
+}
+
+public class CommandScheduler
+{
+    private readonly BlockingCollection<ICommand> _commandQueue = new BlockingCollection<ICommand>();
+    private readonly Task _schedulerTask;
+    private readonly List<Thread> _workerThreads = new List<Thread>();
+    private readonly object _lock = new object();
+    private int _currentWorkerIndex = 0;
+
+    public CommandScheduler(int numWorkers = 4)
+    {
+        // Создаем раюочие потоки
+        for (int i = 0; i < numWorkers; i++)
+        {
+            var thread = new Thread(ProcessCommands);
+            thread.Start();
+            _workerThreads.Add(thread);
+        }
+
+        _schedulerTask = Task.Run(ProcessCommands);
+    }
+
+    public void EnqueueCommand(ICommand command)
+    {
+        _commandQueue.Add(command);
+    }
+
+    private void ProcessCommands()
+    {
+        while (true)
+        {
+            ICommand command;
+            if (_commandQueue.TryTake(out command)) // TryTake для неблокирующего чтения
+            {
+                while (!command.IsCompleted)
+                {
+                    command.Execute();
+
+                    Thread.Sleep(10);
+                }
+            }
+            else
+            {
+                // Нет доступных команд, переходим к другим потокам
+                Thread.Sleep(10);
+            }
+
+            // Round Robin (круговое планирование)
+            lock (_lock)
+            {
+                _currentWorkerIndex = (_currentWorkerIndex + 1) % _workerThreads.Count;
+            }
+        }
+    }
+}
+
+// Создаем планировщика команд
+CommandScheduler scheduler = new CommandScheduler(2); // Создаем 2 рабочих потока
+
+// Ставим в очередь некоторые игровые команды
+scheduler.EnqueueCommand(new GameCommand(5));
+scheduler.EnqueueCommand(new GameCommand(3));
+scheduler.EnqueueCommand(new GameCommand(7));
+
+Console.Read();
 
 #!markdown
 
