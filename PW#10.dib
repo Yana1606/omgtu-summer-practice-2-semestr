@@ -36,3 +36,144 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!markdown
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+public class Message
+{
+    public int CommandId { get; } 
+    public string Data { get; }
+
+    public Message(int commandId, string data)
+    {
+        CommandId = commandId;
+        Data = data;
+    }
+}
+
+public enum LongCommandType
+{
+    Command1,
+    Command2
+}
+
+public abstract class LongCommand
+{
+    public int Id;
+    Queue<Message> _commandQueue = new Queue<Message>();
+    CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
+
+    protected LongCommand(int id)
+    {
+        Id = id;
+    }
+
+    public static LongCommand Create(LongCommandType type)
+    {
+        switch (type)
+        {
+            case LongCommandType.Command1:
+                return new LongCommand1();
+            case LongCommandType.Command2:
+                return new LongCommand2();
+            default:
+                throw new ArgumentException("Invalid command type.");
+        }
+    }
+
+
+    public void EnqueueMessage(Message message)
+    {
+        _commandQueue.Enqueue(message);
+    }
+
+    public async Task ExecuteMessagesAsync()
+    {
+        while (_commandQueue.TryDequeue(out var message))
+        {
+            Console.WriteLine($"Команда {Id} обрабатывает сообщение: {message.Data}");
+            await Task.Delay(100);
+        }
+    }
+}
+
+public class LongCommand1 : LongCommand
+{
+    public LongCommand1() : base(1)
+    {
+    }
+}
+
+public class LongCommand2 : LongCommand
+{
+    public LongCommand2() : base(2)
+    {
+    }
+}
+
+public class Router
+{
+    ConcurrentQueue<Message> _commandConcQueue = new ConcurrentQueue<Message>();
+    Dictionary<int, LongCommand> _commands = new Dictionary<int, LongCommand>();
+
+    public void RegisterCommand(LongCommand command)
+    {
+         _commands.Add(command.Id, command);
+    }
+
+    public void UnregisterCommand(int commandId)
+    {
+        _commands.Remove(commandId);
+    }
+
+    public void EnqueueMessage(Message message)
+    {
+        _commandConcQueue.Enqueue(message);
+    }
+
+    //метод для обработки сообщений из общей очереди
+    public async Task ExecuteMessagesAsync()
+{
+    foreach (var message in _commandConcQueue)
+    {
+        if (_commands.TryGetValue(message.CommandId, out var command))
+        {
+            command.EnqueueMessage(message);
+            await command.ExecuteMessagesAsync();
+        }
+        else
+        {
+            Console.WriteLine($"Неизвестной команде с ID {message.CommandId} сообщение не доставлено");
+        }
+    }
+}
+}
+        // Создаем экземпляры команд
+        var command1 = new LongCommand1();
+        var command2 = new LongCommand2();
+
+        // Создаем экземпляр маршрутизатора
+        var router = new Router();
+
+        // Регистрируем команды в маршрутизаторе
+        router.RegisterCommand(command1);
+        router.RegisterCommand(command2);
+
+        // Добавляем сообщения в общую очередь
+        router.EnqueueMessage(new Message(1, "Сообщение для команды 1"));
+        router.EnqueueMessage(new Message(2, "Сообщение для команды 2"));
+        router.EnqueueMessage(new Message(3, "Сообщение отсутствует"));
+
+        // Запускаем обработку сообщений
+        await router.ExecuteMessagesAsync();
+
+        Console.WriteLine("Все сообщения обработаны.");
+        Console.Read();
