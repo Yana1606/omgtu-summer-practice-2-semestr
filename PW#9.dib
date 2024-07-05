@@ -1,0 +1,191 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №9. Реализация длительных операций.
+
+**Цель:** Предоставить возможность выполннеия команд, для полного завершения которых требуется более одного вызова Execute.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Выполнять длительные опреации в отдельном потоке без монопольного использования потока в течение длительного времени.
+3. Прерывать выполнение таких команд. 
+
+
+## Задание.
+Если для полного выполнения командв потребуется более одного вызова Execute, необходимо такую команду добавить в планировщик.
+
+Для иллюстрации выполнненой работы определить команду
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
+
+public interface ICommand
+{
+    void Execute();
+    bool IsCompleted { get; }
+}
+
+public class TestCommand : ICommand
+{
+    private int id;
+    private int counter = 0;
+
+    public TestCommand(int id)
+    {
+        this.id = id;
+    }
+
+    public void Execute()
+    {
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+        // Set IsCompleted to true when the command is finished
+        IsCompleted = true;
+    }
+
+    public bool IsCompleted { get; private set; } = false;
+}
+
+public class GameCommand : ICommand
+{
+    private int _stepsRemaining;
+
+    public GameCommand(int steps)
+    {
+        _stepsRemaining = steps;
+    }
+
+    public void Execute()
+    {
+        if (_stepsRemaining > 0)
+        {
+            // Имитируем выполнение игровой логики
+            Console.WriteLine($"Выполнение игрового шага {_stepsRemaining}");
+            _stepsRemaining--;
+        }
+    }
+
+    public bool IsCompleted => _stepsRemaining == 0;
+}
+
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+    void HardStop();
+}
+
+public class CommandScheduler : IScheduler
+{
+    private readonly BlockingCollection<ICommand> _commandQueue = new BlockingCollection<ICommand>();
+    private readonly List<Thread> _workerThreads = new List<Thread>();
+    private int _currentWorkerIndex = 0;
+    private bool _stopRequested = false;
+
+    public CommandScheduler(int numWorkers = 4)
+    {
+        // Создаем рабочие потоки
+        for (int i = 0; i < numWorkers; i++)
+        {
+            var thread = new Thread(ProcessCommands);
+            thread.Start();
+            _workerThreads.Add(thread);
+        }
+    }
+
+    public void Add(ICommand cmd)
+    {
+        _commandQueue.Add(cmd); // добавляем команду в очередь
+    }
+
+    public bool HasCommand()
+    {
+        return _commandQueue.Count > 0 || !_commandQueue.IsCompleted;
+    }
+
+    public ICommand Select()
+    {
+        try
+        {
+            return _commandQueue.Take();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    public void HardStop()
+    {
+        _stopRequested = true;
+        _commandQueue.CompleteAdding();
+
+        // Ожидание завершения всех рабочих потоков
+        foreach (var thread in _workerThreads)
+        {
+            if (thread.IsAlive)
+            {
+                thread.Join();
+            }
+        }
+    }
+
+    private void ProcessCommands()
+    {
+        while (!_stopRequested)
+        {
+            ICommand command = Select();
+            if (command != null)
+            {
+                while (!command.IsCompleted)
+                {
+                    command.Execute();
+                }
+            }
+
+            // Round Robin (круговое планирование)
+            lock (_workerThreads)
+            {
+                _currentWorkerIndex = (_currentWorkerIndex + 1) % _workerThreads.Count;
+            }
+        }
+    }
+}
+
+private static CommandScheduler scheduler = new CommandScheduler();
+
+static void InitializeCommands()
+{
+    scheduler.Add(new GameCommand(5));
+    scheduler.Add(new GameCommand(3));
+    scheduler.Add(new GameCommand(7));
+    scheduler.Add(new TestCommand(1));
+    scheduler.Add(new TestCommand(2));
+}
+
+static void RunCommands()
+{
+    InitializeCommands();
+
+    while (scheduler.HasCommand())
+    {
+        Thread.Sleep(100); // Задержка для симуляции работы
+    }
+
+    scheduler.HardStop();
+
+    Console.WriteLine("Все команды выполнены!");
+    Console.ReadKey();
+}
+
+RunCommands();
+
+#!markdown
+
+Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
